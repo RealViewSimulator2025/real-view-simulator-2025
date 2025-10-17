@@ -1,10 +1,14 @@
+// app/interview/page.js
 'use client';
+
+export const dynamic = 'force-dynamic';   // ✅ prevents static generation on this page
+
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { v4 as uuid } from 'uuid';
-import { QUESTIONS } from '../questions';
+import { QUESTIONS } from '../questions'; // adjust path if your file lives elsewhere
 
 export default function InterviewPage() {
-  const [step, setStep] = useState('intro'); // intro | asking | recording | reviewing | finished
+  const [step, setStep] = useState('intro'); // intro | asking | recording | reviewing | transcribing | finished
   const [idx, setIdx] = useState(0);
   const [qa, setQa] = useState([]);
   const mediaRecorderRef = useRef(null);
@@ -24,7 +28,8 @@ export default function InterviewPage() {
 
   async function speak(text) {
     const res = await fetch('/api/tts', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text })
     });
     const blob = await res.blob();
@@ -43,7 +48,7 @@ export default function InterviewPage() {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const mr = new MediaRecorder(stream);
     chunksRef.current = [];
-    mr.ondataavailable = e => { if (e.data.size) chunksRef.current.push(e.data); };
+    mr.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data); };
     mr.onstop = async () => {
       const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
       await transcribeAnswer(blob);
@@ -58,7 +63,9 @@ export default function InterviewPage() {
   async function transcribeAnswer(blob) {
     setTranscribing(true);
     const res = await fetch('/api/transcribe', {
-      method: 'POST', headers: { 'Content-Type': blob.type || 'audio/webm' }, body: blob
+      method: 'POST',
+      headers: { 'Content-Type': blob.type || 'audio/webm' },
+      body: blob
     });
     const data = await res.json();
     setTranscribing(false);
@@ -66,8 +73,10 @@ export default function InterviewPage() {
     const answerText = data.text || '(no transcript)';
     setQa(prev => [...prev, { q: question, a: answerText }]);
 
-    if (idx < QUESTIONS.length - 1) { setIdx(i => i + 1); setStep('reviewing'); }
-    else {
+    if (idx < QUESTIONS.length - 1) {
+      setIdx(i => i + 1);
+      setStep('reviewing');
+    } else {
       setStep('finished');
       const fb = await getFeedback([...qa, { q: question, a: answerText }]);
       setFeedback(fb);
@@ -76,7 +85,8 @@ export default function InterviewPage() {
 
   async function getFeedback(allQa) {
     const res = await fetch('/api/score', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ qa: allQa })
     });
     const data = await res.json();
@@ -86,15 +96,12 @@ export default function InterviewPage() {
   return (
     <main style={{ maxWidth: 860, margin: '40px auto', padding: 16 }}>
       <audio ref={audioRef} hidden />
-      <h1>Real View Simulator – Interview</h1>
+      <h1>Real View Simulator — Interview</h1>
 
-      {permission === 'denied' && <p style={{ color: 'red' }}>Mic permission denied. Enable your mic.</p>}
+      {permission === 'denied' && <p style={{ color: 'red' }}>Mic permission denied.</p>}
 
       {step === 'intro' && (
-        <>
-          <p>We’ll ask {QUESTIONS.length} questions out loud. Answer with your mic. Feedback at the end.</p>
-          <button onClick={startQuestion} disabled={!question || permission!=='ok'}>Start Interview</button>
-        </>
+        <p>We’ll ask {QUESTIONS.length} questions out loud. Answer with your mic.</p>
       )}
 
       {(step === 'asking' || step === 'recording') && (
@@ -140,6 +147,12 @@ export default function InterviewPage() {
           </ul>
         </>
       )}
+
+      <div style={{ marginTop: 16 }}>
+        <button onClick={startQuestion} disabled={!question || permission !== 'ok'}>
+          Start
+        </button>
+      </div>
     </main>
   );
 }
