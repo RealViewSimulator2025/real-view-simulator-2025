@@ -1,11 +1,26 @@
 // app/interview/page.js
 'use client';
-
-export const dynamic = 'force-dynamic';   // ✅ prevents static generation on this page
+export const dynamic = 'force-dynamic';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { v4 as uuid } from 'uuid';
-import { QUESTIONS } from '../questions'; // adjust path if your file lives elsewhere
+import { QUESTIONS } from '../questions'; // adjust if your file lives elsewhere
+
+// Try several audio formats so recording works across browsers
+function pickMimeType() {
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/ogg;codecs=opus',
+    'audio/mp4',
+  ];
+  for (const t of candidates) {
+    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported?.(t)) {
+      return t;
+    }
+  }
+  return ''; // let the browser choose
+}
 
 export default function InterviewPage() {
   const [step, setStep] = useState('intro'); // intro | asking | recording | reviewing | transcribing | finished
@@ -14,27 +29,45 @@ export default function InterviewPage() {
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
   const audioRef = useRef(null);
-  const [permission, setPermission] = useState(null);
+  const [permission, setPermission] = useState(null); // 'ok' | 'denied' | null
   const [transcribing, setTranscribing] = useState(false);
   const [feedback, setFeedback] = useState('');
 
   const question = useMemo(() => QUESTIONS[idx] ?? null, [idx]);
 
+  // Ask for mic permission up front so a later play() is allowed by user gesture
   useEffect(() => {
-    navigator.mediaDevices.getUserMedia({ audio: true, video: false })
-      .then(stream => { setPermission('ok'); stream.getTracks().forEach(t => t.stop()); })
+    navigator.mediaDevices
+      .getUserMedia({ audio: true, video: false })
+      .then((stream) => {
+        setPermission('ok');
+        stream.getTracks().forEach((t) => t.stop());
+      })
       .catch(() => setPermission('denied'));
   }, []);
 
+  // --- Text-to-speech the question (MP3) ---
   async function speak(text) {
     const res = await fetch('/api/tts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text })
+      body: JSON.stringify({ text }),
     });
-    const blob = await res.blob();
+    if (!res.ok) throw new Error('TTS failed');
+
+    const buf = await res.arrayBuffer();
+    const blob = new Blob([buf], { type: 'audio/mpeg' }); // MP3
     const url = URL.createObjectURL(blob);
-    if (audioRef.current) { audioRef.current.src = url; await audioRef.current.play(); }
+
+    if (audioRef.current) {
+      audioRef.current.src = url;
+      audioRef.current.load();
+      try {
+        await audioRef.current.play();
+      } catch {
+        // Some browsers might block autoplay; user will need to click Start
+      }
+    }
   }
 
   async function startQuestion() {
@@ -46,35 +79,47 @@ export default function InterviewPage() {
 
   async function startRecording() {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const mr = new MediaRecorder(stream);
+    const mimeType = pickMimeType();
+    const opts = mimeType ? { mimeType } : undefined;
+
+    const mr = new MediaRecorder(stream, opts);
     chunksRef.current = [];
-    mr.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data); };
-    mr.onstop = async () => {
-      const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
-      await transcribeAnswer(blob);
-      stream.getTracks().forEach(t => t.stop());
+
+    mr.ondataavailable = (e) => {
+      if (e.data && e.data.size) chunksRef.current.push(e.data);
     };
+
+    mr.onstop = async () => {
+      const type =
+        mimeType || chunksRef.current[0]?.type || 'audio/webm'; // fallbacks
+      const blob = new Blob(chunksRef.current, { type });
+      await transcribeAnswer(blob);
+      stream.getTracks().forEach((t) => t.stop());
+    };
+
     mediaRecorderRef.current = mr;
     mr.start();
   }
 
-  function stopRecording() { mediaRecorderRef.current?.stop(); }
+  function stopRecording() {
+    mediaRecorderRef.current?.stop();
+  }
 
   async function transcribeAnswer(blob) {
     setTranscribing(true);
     const res = await fetch('/api/transcribe', {
       method: 'POST',
       headers: { 'Content-Type': blob.type || 'audio/webm' },
-      body: blob
+      body: blob,
     });
     const data = await res.json();
     setTranscribing(false);
 
     const answerText = data.text || '(no transcript)';
-    setQa(prev => [...prev, { q: question, a: answerText }]);
+    setQa((prev) => [...prev, { q: question, a: answerText }]);
 
     if (idx < QUESTIONS.length - 1) {
-      setIdx(i => i + 1);
+      setIdx((i) => i + 1);
       setStep('reviewing');
     } else {
       setStep('finished');
@@ -87,7 +132,7 @@ export default function InterviewPage() {
     const res = await fetch('/api/score', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ qa: allQa })
+      body: JSON.stringify({ qa: allQa }),
     });
     const data = await res.json();
     return data.feedback || 'No feedback';
@@ -95,10 +140,12 @@ export default function InterviewPage() {
 
   return (
     <main style={{ maxWidth: 860, margin: '40px auto', padding: 16 }}>
-      <audio ref={audioRef} hidden />
+      <audio ref={audioRef} hidden preload="auto" />
       <h1>Real View Simulator — Interview</h1>
 
-      {permission === 'denied' && <p style={{ color: 'red' }}>Mic permission denied.</p>}
+      {permission === 'denied' && (
+        <p style={{ color: 'red' }}>Mic permission denied.</p>
+      )}
 
       {step === 'intro' && (
         <p>We’ll ask {QUESTIONS.length} questions out loud. Answer with your mic.</p>
@@ -106,8 +153,11 @@ export default function InterviewPage() {
 
       {(step === 'asking' || step === 'recording') && (
         <>
-          <h3>Question {idx + 1} of {QUESTIONS.length}</h3>
+          <h3>
+            Question {idx + 1} of {QUESTIONS.length}
+          </h3>
           <p>{question}</p>
+
           {step === 'recording' && (
             <>
               <p>Recording… speak when ready.</p>
@@ -138,9 +188,10 @@ export default function InterviewPage() {
         <>
           <h3>Transcript</h3>
           <ul>
-            {qa.map(x => (
+            {qa.map((x) => (
               <li key={uuid()}>
-                <strong>Q:</strong> {x.q}<br />
+                <strong>Q:</strong> {x.q}
+                <br />
                 <strong>A:</strong> {x.a}
               </li>
             ))}
@@ -149,7 +200,10 @@ export default function InterviewPage() {
       )}
 
       <div style={{ marginTop: 16 }}>
-        <button onClick={startQuestion} disabled={!question || permission !== 'ok'}>
+        <button
+          onClick={startQuestion}
+          disabled={!question || permission !== 'ok'}
+        >
           Start
         </button>
       </div>
